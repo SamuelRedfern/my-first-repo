@@ -107,21 +107,3 @@ def analyze_file(path: Path) -> Dict[str, object]:
 
 
 import argparse
-
-def main():
-    parser = argparse.ArgumentParser(description="Python Log Analyzer")
-    parser.add_argument("logfile", help="Path to the log file to analyze")
-    parser.add_argument("-o", "--output", help="Write summary to a file")
-    args = parser.parse_args()
-
-    summary = analyze_file(Path(args.logfile))
-    text = format_summary(summary)
-
-    if args.output:
-        Path(args.output).write_text(text, encoding="utf-8")
-        print(f"Report written to {args.output}")
-    else:
-        print(text)
-
-if __name__ == "__main__":
-    main()
