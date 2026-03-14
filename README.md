@@ -1,6 +1,17 @@
-# Python Log Analyzer
+# Python Security Log Analyzer (SOC Utility)
 
-A simple Python log analyzer that parses ISO8601-like timestamped log lines and summarizes counts by level, time range, and top messages.
+A lightweight SOC-style log analysis tool that parses ISO8601-like logs, extracts IPs, summarizes events, and detects security alerts.
+
+## Features
+
+- Parses logs with timestamp, log level, message, and optional IP extraction
+- Summarizes counts by level, timestamp range, top messages, and top source IPs
+- Runs security detections:
+  - Brute-force detection from repeated failed login attempts
+  - Suspicious high-volume IP activity
+  - Error spike detection
+- Optional anomaly detection via IsolationForest (scikit-learn)
+- Supports CLI output: text summary, JSON output, alerts-only mode
 
 ## Usage
 
@@ -25,16 +36,22 @@ python main.py sample.log
 python main.py sample.log -o report.txt
 ```
 
-4. View security alerts:
+4. Show security alerts only:
 
 ```bash
 python main.py sample.log --alerts-only
 ```
 
-5. JSON output including alerts:
+5. Output JSON with summary and alerts:
 
 ```bash
 python main.py sample.log --json
+```
+
+6. Print version:
+
+```bash
+python main.py --version
 ```
 
 ## Example output

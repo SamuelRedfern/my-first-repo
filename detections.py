@@ -8,8 +8,11 @@ from log_analyzer import LogEntry
 
 FAILED_LOGIN_PATTERNS = re.compile(r"failed .*login|login .*failed|authentication failed|invalid credentials", re.I)
 IP_EVENTS_THRESHOLD = 80
-BRUTE_FORCE_THRESHOLD = 10
-BRUTE_FORCE_WINDOW_MINUTES = 5
+BRUTE_FORCE_RULES = [
+    {"count": 50, "minutes": 15, "severity": "HIGH", "description": "Likely brute force login attack"},
+    {"count": 20, "minutes": 5, "severity": "MEDIUM", "description": "Possible brute force login activity"},
+    {"count": 5, "minutes": 1, "severity": "LOW", "description": "Suspicious failed login rate"},
+]
 ERROR_SPIKE_THRESHOLD = 10
 ERROR_SPIKE_WINDOW_MINUTES = 10
 
@@ -34,8 +37,7 @@ class SecurityAlert:
         }
 
 
-def detect_brute_force(entries: List[LogEntry], threshold: int = BRUTE_FORCE_THRESHOLD,
-                       window_minutes: int = BRUTE_FORCE_WINDOW_MINUTES) -> List[SecurityAlert]:
+def detect_brute_force(entries: List[LogEntry]) -> List[SecurityAlert]:
     ip_failed: Dict[str, List[datetime]] = defaultdict(list)
     for entry in entries:
         if entry.ip is None:
@@ -46,26 +48,32 @@ def detect_brute_force(entries: List[LogEntry], threshold: int = BRUTE_FORCE_THR
     alerts: List[SecurityAlert] = []
     for ip, time_list in ip_failed.items():
         time_list.sort()
-        window = deque()
-        window_span = timedelta(minutes=window_minutes)
-        for ts in time_list:
-            window.append(ts)
-            while window and ts - window[0] > window_span:
-                window.popleft()
-            if len(window) > threshold:
-                alerts.append(SecurityAlert(
-                    type="brute_force",
-                    severity="HIGH",
-                    ip=ip,
-                    count=len(window),
-                    description="Possible brute force login attack",
-                    meta={
-                        "window_minutes": window_minutes,
-                        "threshold": threshold,
-                        "window_count": len(window),
-                    },
-                ))
-                break
+        highest_alert: Optional[SecurityAlert] = None
+        for rule in BRUTE_FORCE_RULES:
+            window = deque()
+            window_span = timedelta(minutes=rule["minutes"])
+            for ts in time_list:
+                window.append(ts)
+                while window and ts - window[0] > window_span:
+                    window.popleft()
+                if len(window) >= rule["count"]:
+                    alert = SecurityAlert(
+                        type="brute_force",
+                        severity=rule["severity"],
+                        ip=ip,
+                        count=len(window),
+                        description=rule["description"],
+                        meta={
+                            "window_minutes": rule["minutes"],
+                            "threshold": rule["count"],
+                            "window_count": len(window),
+                        },
+                    )
+                    if highest_alert is None or rule["count"] > highest_alert.meta.get("threshold", 0):
+                        highest_alert = alert
+                    break
+        if highest_alert:
+            alerts.append(highest_alert)
     return alerts
 
 
