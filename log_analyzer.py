@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 LOG_PATTERN = re.compile(r"^(?P<timestamp>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?)(?:\s+\[(?P<level>\w+)\])?\s*(?P<message>.*)$")
+IP_PATTERN = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b")
 
 @dataclass
 class LogEntry:
@@ -12,6 +13,14 @@ class LogEntry:
     level: str
     message: str
     raw: str
+    ip: Optional[str] = None
+
+
+def extract_ip_from_text(text: str) -> Optional[str]:
+    match = IP_PATTERN.search(text)
+    if not match:
+        return None
+    return match.group(0)
 
 
 def parse_log_line(line: str) -> Optional[LogEntry]:
@@ -21,11 +30,12 @@ def parse_log_line(line: str) -> Optional[LogEntry]:
     timestamp_text = match.group("timestamp")
     level = (match.group("level") or "INFO").upper()
     message = match.group("message") or ""
+    ip = extract_ip_from_text(message)
     try:
         timestamp = datetime.fromisoformat(timestamp_text.replace(" ", "T"))
     except ValueError:
         return None
-    return LogEntry(timestamp=timestamp, level=level, message=message, raw=line.rstrip("\n"))
+    return LogEntry(timestamp=timestamp, level=level, message=message, raw=line.rstrip("\n"), ip=ip)
 
 
 def analyze_logs(lines: List[str]) -> Dict[str, object]:
@@ -48,16 +58,29 @@ def analyze_logs(lines: List[str]) -> Dict[str, object]:
             "first_timestamp": None,
             "last_timestamp": None,
             "top_messages": [],
+            "ip_counts": {},
+            "ip_error_counts": {},
+            "ip_unique_message_counts": {},
+            "top_ips": [],
         }
 
     levels: Dict[str, int] = {}
     msg_counts: Dict[str, int] = {}
+    ip_counts: Dict[str, int] = {}
+    ip_error_counts: Dict[str, int] = {}
+    ip_messages: Dict[str, set] = {}
 
     for e in parsed:
         levels[e.level] = levels.get(e.level, 0) + 1
         msg_counts[e.message] = msg_counts.get(e.message, 0) + 1
+        if e.ip:
+            ip_counts[e.ip] = ip_counts.get(e.ip, 0) + 1
+            ip_messages.setdefault(e.ip, set()).add(e.message)
+            if e.level == "ERROR":
+                ip_error_counts[e.ip] = ip_error_counts.get(e.ip, 0) + 1
 
     top_messages = sorted(msg_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    top_ips = sorted(ip_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
     first_ts = min(e.timestamp for e in parsed)
     last_ts = max(e.timestamp for e in parsed)
 
@@ -68,6 +91,11 @@ def analyze_logs(lines: List[str]) -> Dict[str, object]:
         "first_timestamp": first_ts.isoformat(),
         "last_timestamp": last_ts.isoformat(),
         "top_messages": top_messages,
+        "ip_counts": ip_counts,
+        "ip_error_counts": ip_error_counts,
+        "ip_unique_message_counts": {ip: len(msgs) for ip, msgs in ip_messages.items()},
+        "top_ips": top_ips,
+        "parsed_entries": parsed,
     }
 
 
@@ -94,6 +122,13 @@ def format_summary(summary: Dict[str, object]) -> str:
             scrub = msg if len(msg) <= 100 else msg[:97] + "..."
             lines.append(f"    {count} × {scrub}")
 
+    ip_counts = summary.get("ip_counts", {})
+    if ip_counts:
+        lines.append("  Top IPs:")
+        top_ips = sorted(ip_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        for ip, count in top_ips:
+            lines.append(f"    {ip}: {count} events")
+
     return "\n".join(lines)
 
 
@@ -104,24 +139,3 @@ def load_file(path: Path) -> List[str]:
 def analyze_file(path: Path) -> Dict[str, object]:
     lines = load_file(path)
     return analyze_logs(lines)
-
-
-import argparse
-
-def main():
-    parser = argparse.ArgumentParser(description="Python Log Analyzer")
-    parser.add_argument("logfile", help="Path to the log file to analyze")
-    parser.add_argument("-o", "--output", help="Write summary to a file")
-    args = parser.parse_args()
-
-    summary = analyze_file(Path(args.logfile))
-    text = format_summary(summary)
-
-    if args.output:
-        Path(args.output).write_text(text, encoding="utf-8")
-        print(f"Report written to {args.output}")
-    else:
-        print(text)
-
-if __name__ == "__main__":
-    main()

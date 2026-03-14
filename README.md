@@ -24,3 +24,46 @@ python main.py sample.log
 ```bash
 python main.py sample.log -o report.txt
 ```
+
+4. View security alerts:
+
+```bash
+python main.py sample.log --alerts-only
+```
+
+5. JSON output including alerts:
+
+```bash
+python main.py sample.log --json
+```
+
+## Example output
+
+### Normal summary
+```
+Log Analysis Summary:
+  Parsed entries: 57
+  Failed parse lines: 0
+  Levels:
+    INFO: 40
+    WARN: 9
+    ERROR: 8
+  First timestamp: 2026-03-14T08:00:00
+  Last timestamp: 2026-03-14T11:30:55
+  Top messages:
+    6 × Request completed: /api/data
+    ...
+  Top IPs:
+    192.168.1.10: 14 events
+
+Security Alerts:
+- [HIGH] Possible brute force login attack from 192.168.1.10
+- [MEDIUM] High-volume event activity from a single IP from 45.22.10.5
+```
+
+### Alerts-only mode
+```
+Security Alerts:
+- [HIGH] Possible brute force login attack from 192.168.1.10
+- [MEDIUM] High-volume event activity from a single IP from 45.22.10.5
+```
