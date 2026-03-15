@@ -1,0 +1,368 @@
+Python Security Log Analyzer - How It Works
+
+Overview
+
+This project reads a log file, turns each valid line into a structured Python object, builds a summary of the log activity, runs security detections, runs machine learning anomaly detection, and then enriches selected alerts with MITRE ATT&CK mappings.
+
+The main flow starts in main.py.
+
+
+1. Program entry point
+
+When the program is run from the command line, main.py is the starting point.
+
+Main steps:
+
+- Read command-line arguments such as the log file path, JSON mode, alerts-only mode, and output file
+- Check that the input file exists
+- Analyze the file with analyze_file()
+- Reuse the parsed log entries for detections
+- Run both:
+  - rule-based detections from detections.py
+  - anomaly detection from anomaly_detection.py
+- Enrich all alerts with MITRE ATT&CK metadata from mitre_attack.py
+- Format the results as text or JSON
+- Print them or write them to a file
+
+
+2. Loading the log file
+
+The file is read in log_analyzer.py by load_file().
+
+What happens:
+
+- The whole file is opened using UTF-8
+- Invalid characters are replaced instead of crashing the program
+- The file is split into lines
+
+At this point, the code still has plain text lines only.
+
+
+3. Parsing each line into structured log data
+
+The function parse_log_line() in log_analyzer.py is responsible for turning one line of text into a LogEntry object.
+
+The LogEntry dataclass stores:
+
+- timestamp
+- level
+- message
+- raw
+- ip
+
+How parsing works:
+
+- A regular expression checks whether the line matches the expected log format
+- The timestamp is extracted and converted into a Python datetime
+- The log level is extracted
+  - if no level is present, it defaults to INFO
+- The rest of the line becomes the message
+- The code searches the message for an IPv4 address
+- If everything is valid, a LogEntry object is created
+- If parsing fails, the line is ignored and counted as a failed line
+
+Example:
+
+Input line:
+2026-03-14T10:02:00 [ERROR] Could not connect to database from 10.0.0.5
+
+Parsed result:
+- timestamp = 2026-03-14T10:02:00
+- level = ERROR
+- message = Could not connect to database from 10.0.0.5
+- ip = 10.0.0.5
+
+
+4. Building the analysis result
+
+The function analyze_logs() loops through every line and parses it.
+
+It produces an AnalysisResult object with two parts:
+
+- summary
+- parsed_entries
+
+summary contains output-safe aggregated data:
+
+- total parsed entries
+- failed parse lines
+- counts by log level
+- first and last timestamp
+- top repeated messages
+- event counts per IP
+- error counts per IP
+- unique message counts per IP
+- top IPs
+
+parsed_entries contains the full list of LogEntry objects and is used internally for detections.
+
+This split is important because:
+
+- summary is good for JSON output and reports
+- parsed_entries is good for deeper analysis
+- internal Python objects are not mixed into user-facing JSON
+
+
+5. Rule-based detections
+
+After analysis, main.py sends parsed_entries into run_security_detections() from detections.py.
+
+This module contains several detection functions.
+
+
+5a. Brute-force detection
+
+Function: detect_brute_force()
+
+What it looks for:
+
+- log messages that match failed login patterns such as:
+  - failed login
+  - login failed
+  - authentication failed
+  - invalid credentials
+
+How it works:
+
+- Group failed login timestamps by IP address
+- Sort the timestamps for each IP
+- Apply sliding time windows based on the configured rules
+- Find the highest number of failed logins inside each window
+- If the count crosses a threshold, create an alert
+
+Current rule levels:
+
+- 5 failures in 1 minute = LOW
+- 20 failures in 5 minutes = MEDIUM
+- 50 failures in 15 minutes = HIGH
+
+Alert metadata includes:
+
+- threshold used
+- time window size
+- peak count inside the window
+- first and last timestamp in the suspicious burst
+
+
+5b. Suspicious IP activity detection
+
+Function: detect_suspicious_ip_activity()
+
+What it looks for:
+
+- an IP producing a very high number of events in a short time period
+
+How it works:
+
+- Collect timestamps for each IP
+- Count log levels seen for that IP
+- Use a sliding window to find the peak number of events in the configured time window
+- If the peak crosses the threshold, generate an alert
+
+This is better than just counting lifetime events because:
+
+- a busy IP over many hours may be normal
+- a burst of many events in a few minutes is more suspicious
+
+Alert metadata includes:
+
+- window size
+- peak event count
+- first and last timestamp of the peak burst
+- level counts for that IP
+
+
+5c. Error spike detection
+
+Function: detect_error_spike()
+
+What it looks for:
+
+- many ERROR-level log lines appearing close together in time
+
+How it works:
+
+- Filter the parsed entries down to ERROR logs only
+- Sort them by timestamp
+- Use a sliding window over time
+- Keep the largest ERROR burst found
+- If it meets the threshold, generate an alert
+
+Alert metadata includes:
+
+- number of ERROR events in the burst
+- first and last timestamp of the spike
+- IP breakdown showing which IPs were involved
+
+
+6. Machine learning anomaly detection
+
+main.py also sends summary into detect_anomalies() in anomaly_detection.py.
+
+This part uses Isolation Forest from scikit-learn.
+
+What data it uses for each IP:
+
+- total event count
+- error count
+- unique message count
+
+These values become a numeric feature vector per IP.
+
+Example feature vector:
+
+- [18, 4, 6]
+
+This would mean:
+
+- 18 total events
+- 4 error events
+- 6 unique messages
+
+How the model works:
+
+- Build one feature row per IP
+- Train an IsolationForest model on the set of IP feature rows
+- Ask the model which IPs look unusual compared with the others
+- Create alerts for any IP predicted as anomalous
+
+Important notes:
+
+- At least 3 IP samples are needed before the model runs
+- If scikit-learn is not installed, this step returns a fallback message instead of crashing
+- The model is unsupervised, which means it does not need labeled attack examples
+
+
+7. MITRE ATT&CK enrichment
+
+After rule-based and anomaly alerts are produced, main.py sends them into enrich_alerts_with_mitre_attack() in mitre_attack.py.
+
+This stage does not detect attacks on its own.
+Instead, it adds ATT&CK context to alerts that already exist.
+
+How it works:
+
+- Each alert has a type, such as:
+  - brute_force
+  - suspicious_ip_activity
+  - error_spike
+  - anomaly_ip_behavior
+- mitre_attack.py contains a mapping table from internal alert types to ATT&CK metadata
+- If a mapping exists, the alert gets a mitre_attack list
+- If there is no mapping, the alert still gets a mitre_attack field, but it is an empty list
+
+Current mapping in this project:
+
+- brute_force
+  - Tactic: Credential Access
+  - Tactic ID: TA0006
+  - Technique: Brute Force
+  - Technique ID: T1110
+
+Why this is useful:
+
+- The project keeps its own detection logic
+- ATT&CK is added as enrichment, not as a replacement
+- Alerts become easier to explain in a SOC-style report
+- JSON output becomes easier to integrate with dashboards or later reporting tools
+
+Important design choice:
+
+- Only strong mappings are added right now
+- Alerts like anomaly_ip_behavior are left unmapped to avoid overclaiming
+
+
+8. Combining and formatting alerts
+
+main.py combines both alert sources into one list:
+
+- security alerts from detections.py
+- anomaly alerts from anomaly_detection.py
+
+That combined list is then enriched with ATT&CK metadata.
+
+The final output depends on the command-line flags.
+
+Normal text mode:
+
+- A readable summary is created by format_summary()
+- Alerts are formatted by format_alerts()
+- Each alert also shows:
+  - the MITRE ATT&CK mapping if one exists
+  - or "Not directly mapped" if it does not
+
+JSON mode:
+
+- The program outputs:
+  - summary
+  - alerts
+- Each alert includes:
+  - normal alert fields
+  - mitre_attack
+
+Alerts-only mode:
+
+- The program skips the full summary and prints only alerts
+
+Optional file output:
+
+- If -o or --output is used, the formatted result is saved to a file
+
+
+9. End-to-end data flow
+
+The processing pipeline looks like this:
+
+1. User runs main.py with a log file
+2. load_file() reads the file into text lines
+3. parse_log_line() converts valid lines into LogEntry objects
+4. analyze_logs() creates:
+   - summary
+   - parsed_entries
+5. parsed_entries goes to detections.py for rule-based checks
+6. summary goes to anomaly_detection.py for ML analysis
+7. Alerts from both sources are combined
+8. mitre_attack.py enriches the alerts with ATT&CK metadata
+9. Results are formatted as text or JSON
+10. Output is printed or saved
+
+
+10. Why the design is split this way
+
+The code is separated into modules so each part has a focused job:
+
+- main.py
+  Controls the workflow and CLI behavior
+
+- log_analyzer.py
+  Parses and summarizes raw log data
+
+- detections.py
+  Applies security rules using timestamps, IPs, and message content
+
+- anomaly_detection.py
+  Applies machine learning to summarized IP behavior
+
+- mitre_attack.py
+  Adds ATT&CK tactic and technique metadata to supported alert types
+
+This makes the code easier to maintain because:
+
+- parsing can change without rewriting the CLI
+- detection rules can evolve independently
+- ML logic can be improved without changing the parser
+- ATT&CK mappings can grow without changing the core detection logic
+
+
+11. In short
+
+The program takes raw log text and converts it into structured records.
+Those structured records are then used in three ways:
+
+- to build a human-readable summary
+- to detect suspicious behavior using rules and machine learning
+- to enrich supported alerts with MITRE ATT&CK context
+
+So the key idea is:
+
+raw log lines -> parsed log entries -> summary/features -> alerts -> ATT&CK enrichment -> output

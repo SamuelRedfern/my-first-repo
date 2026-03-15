@@ -3,9 +3,10 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
-from log_analyzer import analyze_file, format_summary, load_file, parse_log_line
+from log_analyzer import analyze_file, format_summary
 from anomaly_detection import detect_anomalies
 from detections import run_security_detections
+from mitre_attack import enrich_alerts_with_mitre_attack
 
 VERSION = "1.0.0"
 
@@ -57,6 +58,16 @@ def format_alerts(alerts: List[Dict[str, object]]) -> str:
     for alert in alerts:
         ip_display = f" from {alert['ip']}" if alert.get("ip") else ""
         lines.append(f"- [{alert['severity']}] {alert['description']}{ip_display}")
+        mitre_attack = alert.get("mitre_attack", [])
+        if mitre_attack:
+            for mapping in mitre_attack:
+                lines.append(
+                    "  MITRE ATT&CK: "
+                    f"{mapping['tactic_id']} {mapping['tactic']} -> "
+                    f"{mapping['technique_id']} {mapping['technique']}"
+                )
+        else:
+            lines.append("  MITRE ATT&CK: Not directly mapped")
     return "\n".join(lines)
 
 
@@ -68,16 +79,13 @@ def main() -> int:
         print(f"Error: log file not found: {log_path}")
         return 1
 
-    summary = analyze_file(log_path)
-    entries = []
-    for line in load_file(log_path):
-        entry = parse_log_line(line)
-        if entry is not None:
-            entries.append(entry)
+    analysis = analyze_file(log_path)
+    summary = analysis.summary
+    entries = analysis.parsed_entries
 
     security_alerts = run_security_detections(entries)
     anomaly_alerts = detect_anomalies(summary)
-    combined_alerts = security_alerts + anomaly_alerts
+    combined_alerts = enrich_alerts_with_mitre_attack(security_alerts + anomaly_alerts)
 
     if args.alerts_only:
         if args.json:
